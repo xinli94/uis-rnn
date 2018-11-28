@@ -47,7 +47,6 @@ def data_path_helper(data_path):
     raise ValueError('==> Input data type unsupported')
   return data_list
 
-
 def train_uis_rnn(model_args, training_args, inference_args, data_args):
   """Experiment pipeline.
 
