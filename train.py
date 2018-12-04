@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import argparse
+import collections
 import numpy as np
 import os
 import pandas as pd
@@ -28,7 +29,7 @@ random.seed(12345)
 # avoid OOM
 MAX_SIZE = 20000 * 256
 # test chunk size
-CHUNK_SIZE = 100
+CHUNK_SIZE = 200
 
 # SAVED_MODEL_NAME = 'saved_model.uisrnn'
 TRAIN_SEQUENCE = 'train_sequence'
@@ -46,57 +47,7 @@ def data_path_helper(data_path):
     raise ValueError('==> Input data type unsupported')
   return data_list
 
-def train_uis_rnn(model_args, training_args, inference_args, data_args):
-  """Experiment pipeline.
-
-  Load data --> train model --> test model --> output result
-
-  Args:
-    model_args: model configurations
-    training_args: training configurations
-    inference_args: inference configurations
-  """
-  model = uisrnn.UISRNN(model_args)
-
-  ###############################################################################################
-  #                                       training                                              #
-  ###############################################################################################
-  if not data_args.test_only:
-    train_data_list = data_path_helper(data_args.train_data_path)
-
-    train_idx = 0
-    while train_idx < len(train_data_list):
-      new_cluster_flag = True
-      train_data, train_sequence, train_cluster_id = None, None, None
-
-      while train_idx < len(train_data_list) and (new_cluster_flag or train_sequence.size < MAX_SIZE):
-        try:
-          train_data = np.load(train_data_list[train_idx])
-        except:
-          print('==> Skip npz file: {}'.format(train_data_list[train_idx]))
-          continue
-
-        train_idx += 1
-        # if train_sequence == None:
-        if new_cluster_flag == True:
-          train_sequence = train_data[TRAIN_SEQUENCE]
-          train_cluster_id = train_data[TRAIN_CLUSTER]
-          new_cluster_flag = False
-        else:
-          train_sequence = np.append(train_sequence, train_data[TRAIN_SEQUENCE], axis=0)
-          train_cluster_id = np.append(train_cluster_id, train_data[TRAIN_CLUSTER], axis=0)
-
-      if train_data != None:
-        print('==> Train_sequence idx {}, shape {}'.format(train_idx, train_sequence.shape))
-        print('==> Train_cluster_id idx {}, shape {}'.format(train_idx, train_cluster_id.shape))
-        model.fit(train_sequence, train_cluster_id, training_args)
-        model.save(data_args.checkpoint_path)
-
-  else:
-    # we can also skip training by calling：
-    model.load(data_args.checkpoint_path)
-    print('==> Loaded checkpoint from {}'.format(data_args.checkpoint_path))
-
+def test_uis_rnn(model, model_args, training_args, inference_args, data_args):
   ###############################################################################################
   #                                       testing                                               #
   ###############################################################################################
@@ -106,7 +57,19 @@ def train_uis_rnn(model_args, training_args, inference_args, data_args):
 
   test_sequences, test_cluster_ids = None, None
   test_data_list = data_path_helper(data_args.test_data_path)
-  random.shuffle(test_data_list)
+
+  # Shuffle by video id
+  video_map = collections.defaultdict(list)
+  for test_data_path in test_data_list:
+    video_map[test_data_path.split('/')[-2]].append(test_data_path)
+  keys = sorted(list(video_map.keys()), key=lambda x: random.random())
+  # Then mixing videos by variable length chunks
+  test_data_list = []
+  idx = 0
+  while idx < len(keys):
+    step = random.choice(range(1, 10))
+    test_data_list += sorted([item for key in keys[idx:idx+step] for item in video_map[key]], key=lambda x: random.random())
+    idx += step
 
   if not data_args.reformat:
     for test_data_path in test_data_list:
@@ -166,7 +129,59 @@ def train_uis_rnn(model_args, training_args, inference_args, data_args):
         print('Accuracy: {}'.format(accuracy))
         print('-' * 80)
         records += zip(test_cluster_id, predicted_label)
-  
+  return test_record, records
+
+
+def train_uis_rnn(model_args, training_args, inference_args, data_args):
+  """Experiment pipeline.
+
+  Load data --> train model --> test model --> output result
+
+  Args:
+    model_args: model configurations
+    training_args: training configurations
+    inference_args: inference configurations
+  """
+  model = uisrnn.UISRNN(model_args)
+  ###############################################################################################
+  #                                       training                                              #
+  ###############################################################################################
+  model.load(data_args.checkpoint)
+  print('==> Loaded checkpoint from {}'.format(data_args.checkpoint))
+
+  if not data_args.test_only:
+    train_data_list = data_path_helper(data_args.train_data_path)
+
+    train_idx = 0
+    while train_idx < len(train_data_list):
+      new_cluster_flag = True
+      train_data, train_sequence, train_cluster_id = None, None, None
+
+      while train_idx < len(train_data_list) and (new_cluster_flag or train_sequence.size < MAX_SIZE):
+        try:
+          train_data = np.load(train_data_list[train_idx])
+        except:
+          print('==> Skip npz file: {}'.format(train_data_list[train_idx]))
+          continue
+
+        train_idx += 1
+        # if train_sequence == None:
+        if new_cluster_flag == True:
+          train_sequence = train_data[TRAIN_SEQUENCE]
+          train_cluster_id = train_data[TRAIN_CLUSTER]
+          new_cluster_flag = False
+        else:
+          train_sequence = np.append(train_sequence, train_data[TRAIN_SEQUENCE], axis=0)
+          train_cluster_id = np.append(train_cluster_id, train_data[TRAIN_CLUSTER], axis=0)
+
+      if train_data != None:
+        print('==> Train_sequence idx {}, shape {}'.format(train_idx, train_sequence.shape))
+        print('==> Train_cluster_id idx {}, shape {}'.format(train_idx, train_cluster_id.shape))
+        model.fit(train_sequence, train_cluster_id, training_args)
+        model.save(data_args.checkpoint)
+        # test_record, records = test_uis_rnn(model, model_args, training_args, inference_args, data_args)
+
+  test_record, records = test_uis_rnn(model, model_args, training_args, inference_args, data_args)
   df = pd.DataFrame.from_records(records, columns=['ground_truth', 'predicted_label'])
   df.to_csv(data_args.output_path, index=False)
 
@@ -203,7 +218,7 @@ def main():
     help='If set, reformat test data from 2d to 3d.')
 
   data_parser.add_argument(
-    '--checkpoint_path',
+    '--checkpoint',
     default='tmp.uisrnn',
     help='checkpoint path.')
 
